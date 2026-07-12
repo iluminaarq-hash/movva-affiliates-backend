@@ -101,4 +101,44 @@ function extractOrderData(order) {
   };
 }
 
-module.exports = { listOrders, getAllOrdersByDateRange, createDiscount, listDiscounts, extractOrderData };
+
+async function listDiscountsAll() {
+  const all = [];
+  let page = 1;
+  while(true) {
+    const res = await fetch(`${BASE}/${SLUG}/discount?page=${page}&limit=50`, { headers: headers() });
+    if (!res.ok) break;
+    const data = await res.json();
+    const items = data?.discounts?.data || data?.data || (Array.isArray(data?.discounts) ? data.discounts : []);
+    if (!items.length) break;
+    all.push(...items);
+    const lastPage = data?.discounts?.last_page || data?.last_page || 1;
+    if (page >= lastPage) break;
+    page++;
+  }
+  return all;
+}
+
+async function getOrdersByCoupon(couponCode) {
+  const all = [];
+  let page = 1;
+  while(true) {
+    const params = new URLSearchParams({ page, payment_status: 3 });
+    const res = await fetch(`${BASE}/${SLUG}/orders?${params}`, { headers: headers() });
+    if (!res.ok) break;
+    const data = await res.json();
+    const orders = data?.orders?.data || data?.data || [];
+    const lastPage = data?.orders?.last_page || data?.last_page || 1;
+    // filter by coupon
+    const matched = orders.filter(o => {
+      const code = (o.discount_code || o.coupon_code || o.coupon || '');
+      return code.toUpperCase() === couponCode.toUpperCase();
+    });
+    all.push(...matched);
+    if (page >= lastPage || page >= 20) break;
+    page++;
+  }
+  return all;
+}
+
+module.exports = { listOrders, getAllOrdersByDateRange, createDiscount, listDiscounts, listDiscountsAll, getOrdersByCoupon, extractOrderData };
