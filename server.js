@@ -242,6 +242,73 @@ app.post('/api/candidatos/bulk/import', auth, (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+
+// ── CARTPANDA PROXY ────────────────────────────────────────────────────────────
+app.get('/api/cartpanda/discounts', auth, async (req, res) => {
+  try {
+    const all = await cartpanda.listDiscountsAll();
+    res.json({ ok: true, total: all.length, discounts: all });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/cartpanda/orders-by-coupon/:coupon', auth, async (req, res) => {
+  try {
+    const orders = await cartpanda.getOrdersByCoupon(req.params.coupon);
+    res.json({ ok: true, total: orders.length, orders });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/cartpanda/sync-coupons', auth, async (req, res) => {
+  try {
+    const { comissao_pct = 10 } = req.body;
+    const discounts = await cartpanda.listDiscountsAll();
+    let criados = 0, existentes = 0, pedidosTotal = 0;
+    const resultado = [];
+
+    for (const d of discounts) {
+      const cupom = (d.code || '').toUpperCase().trim();
+      if (!cupom) continue;
+      const existing = db.prepare('SELECT id FROM afiliados WHERE cupom = ?').get(cupom);
+      const orders = await cartpanda.getOrdersByCoupon(cupom);
+      const paidOrders = orders.filter(o => !o.cancelled_at);
+
+      if (!existing && paidOrders.length > 0) {
+        const countC = db.prepare('SELECT COUNT(*) as n FROM candidatos').get().n;
+        const candidatoId = 'EXT' + String(countC + 1).padStart(3,'0');
+        const nomeGuess = cupom.replace(/[0-9]/g,'').toLowerCase();
+        const candidatoExist = db.prepare("SELECT id FROM candidatos WHERE LOWER(name) LIKE ? OR LOWER(instagram) LIKE ?").get('%'+nomeGuess+'%','%'+nomeGuess+'%');
+        const afiliadoCandidatoId = candidatoExist?.id || candidatoId;
+        if (!candidatoExist) {
+          db.prepare("INSERT OR IGNORE INTO candidatos (id, name, whatsapp, instagram, cupom, status, fonte, data_inscricao) VALUES (?,?,'','',?,'Ativo','CartPanda import',date('now'))").run(candidatoId, cupom, cupom);
+        }
+        db.prepare("INSERT OR IGNORE INTO afiliados (candidato_id, cupom, desconto_pct, comissao_pct, cartpanda_discount_id, status, data_inicio) VALUES (?,?,?,?,?,'ativo',date('now'))").run(afiliadoCandidatoId, cupom, parseFloat(d.discount||10), comissao_pct, String(d.id||''));
+        db.prepare("UPDATE candidatos SET cupom=?,status='Ativo' WHERE id=?").run(cupom, afiliadoCandidatoId);
+        criados++;
+      } else if (existing) { existentes++; }
+
+      const afiliado = db.prepare('SELECT id, comissao_pct FROM afiliados WHERE cupom = ?').get(cupom);
+      if (afiliado && paidOrders.length > 0) {
+        const insertP = db.prepare("INSERT OR IGNORE INTO pedidos (cartpanda_order_id,numero_pedido,afiliado_id,cupom,cliente_nome,cliente_email,valor_produtos,valor_desconto,valor_frete,valor_total,base_comissionavel,comissao_valor,status_pagamento,status_pedido,cancelado,data_pedido,raw_data) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        let vendasCupom = 0;
+        const tx = db.transaction(() => {
+          paidOrders.forEach(o => {
+            const d2 = cartpanda.extractOrderData(o);
+            const com = d2.base_comissionavel * afiliado.comissao_pct / 100;
+            insertP.run(d2.cartpanda_order_id,d2.numero_pedido,afiliado.id,cupom,d2.cliente_nome,d2.cliente_email,d2.valor_produtos,d2.valor_desconto,d2.valor_frete,d2.valor_total,d2.base_comissionavel,com,d2.status_pagamento,d2.status_pedido,d2.cancelado,d2.data_pedido,d2.raw_data);
+            vendasCupom += d2.base_comissionavel; pedidosTotal++;
+          });
+        });
+        tx();
+        resultado.push({ cupom, pedidos: paidOrders.length, total_vendido: vendasCupom.toFixed(2), desconto_pct: d.discount, usado: d.used });
+      }
+    }
+    res.json({ ok: true, total_cupons: discounts.length, afiliados_criados: criados, afiliados_existentes: existentes, pedidos_importados: pedidosTotal, cupons_com_vendas: resultado });
+  } catch(err) {
+    console.error('sync-coupons error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── INIT & START ──────────────────────────────────────────────────────────────
 dbModule.initDB().then(database => {
   const dbHelpers = {
