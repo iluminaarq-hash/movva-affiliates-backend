@@ -379,7 +379,7 @@ app.post('/api/cartpanda/sync-coupons', auth, async (req, res) => {
 
       const afiliado = db.get('SELECT id, comissao_pct FROM afiliados WHERE cupom = ?', [cupom]);
       if (afiliado && paidOrders.length > 0) {
-        const insertP = db.prepare("INSERT OR IGNORE INTO pedidos (cartpanda_order_id,numero_pedido,afiliado_id,cupom,cliente_nome,cliente_email,valor_produtos,valor_desconto,valor_frete,valor_total,base_comissionavel,comissao_valor,status_pagamento,status_pedido,cancelado,data_pedido,raw_data) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        const insertP = _globalDb.prepare("INSERT OR IGNORE INTO pedidos (cartpanda_order_id,numero_pedido,afiliado_id,cupom,cliente_nome,cliente_email,valor_produtos,valor_desconto,valor_frete,valor_total,base_comissionavel,comissao_valor,status_pagamento,status_pedido,cancelado,data_pedido,raw_data) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         let vendasCupom = 0;
         const tx = (fn) => fn(); // db.transaction simplified
 const _tx_fn = (() => {
@@ -411,7 +411,7 @@ app.post('/api/cartpanda/import-coupons', auth, (req, res) => {
     let criados = 0, existentes = 0, erros = 0;
     const resultado = [];
 
-    const tx = db.transaction(() => {
+    const tx = _globalDb.transaction(() => {
       cupons.forEach(c => {
         const cupom = (c.code || '').toUpperCase().trim();
         if (!cupom) return;
@@ -419,7 +419,7 @@ app.post('/api/cartpanda/import-coupons', auth, (req, res) => {
         const usadoNum = parseInt((c.usado || '0').split('/')[0]) || 0;
         
         // Verificar se já existe afiliado com esse cupom
-        const existing = db.prepare('SELECT id FROM afiliados WHERE cupom = ?').get(cupom);
+        const existing = _globalDb.prepare('SELECT id FROM afiliados WHERE cupom = ?').get(cupom);
         if (existing) { existentes++; return; }
 
         // Tentar encontrar candidato existente pelo cupom (nome parcial)
@@ -427,7 +427,7 @@ app.post('/api/cartpanda/import-coupons', auth, (req, res) => {
         let candidatoId = null;
         
         if (nomeGuess.length >= 3) {
-          const candidatoExist = db.prepare(
+          const candidatoExist = _globalDb.prepare(
             "SELECT id FROM candidatos WHERE LOWER(name) LIKE ? OR LOWER(instagram) LIKE ? OR LOWER(cupom) = ?"
           ).get('%'+nomeGuess+'%', '%'+nomeGuess+'%', cupom.toLowerCase());
           candidatoId = candidatoExist?.id;
@@ -435,9 +435,9 @@ app.post('/api/cartpanda/import-coupons', auth, (req, res) => {
 
         // Criar candidato placeholder se não encontrou
         if (!candidatoId) {
-          const countC = db.prepare('SELECT COUNT(*) as n FROM candidatos').get().n;
+          const countC = _globalDb.prepare('SELECT COUNT(*) as n FROM candidatos').get().n;
           candidatoId = 'CP' + String(countC + 1).padStart(3,'0');
-          db.prepare(`
+          _globalDb.prepare(`
             INSERT OR IGNORE INTO candidatos 
             (id, name, whatsapp, instagram, email, cupom, status, fonte, data_inscricao)
             VALUES (?, ?, '', '', '', ?, 'Ativo', 'CartPanda import', ?)
@@ -446,13 +446,13 @@ app.post('/api/cartpanda/import-coupons', auth, (req, res) => {
 
         // Criar afiliado
         try {
-          db.prepare(`
+          _globalDb.prepare(`
             INSERT OR IGNORE INTO afiliados 
             (candidato_id, cupom, desconto_pct, comissao_pct, status, data_inicio)
             VALUES (?, ?, 10, ?, 'ativo', ?)
           `).run(candidatoId, cupom, comissao_pct_padrao, c.inicio || '');
 
-          db.prepare("UPDATE candidatos SET cupom=?, status='Ativo' WHERE id=?")
+          _globalDb.prepare("UPDATE candidatos SET cupom=?, status='Ativo' WHERE id=?")
             .run(cupom, candidatoId);
 
           log(candidatoId, 'afiliado_importado', `Importado do CartPanda — ${usadoNum} usos`, null, 'Ativo', 'Sistema');
