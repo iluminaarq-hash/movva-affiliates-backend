@@ -401,6 +401,75 @@ const _tx_fn = (() => {
   }
 });
 
+
+// ── IMPORT COUPONS FROM CARTPANDA SCRAPE ─────────────────────────────────────
+app.post('/api/cartpanda/import-coupons', auth, (req, res) => {
+  try {
+    const { cupons, comissao_pct_padrao = 10 } = req.body;
+    if (!Array.isArray(cupons)) return res.status(400).json({ error: 'cupons deve ser array' });
+
+    let criados = 0, existentes = 0, erros = 0;
+    const resultado = [];
+
+    const tx = db.transaction(() => {
+      cupons.forEach(c => {
+        const cupom = (c.code || '').toUpperCase().trim();
+        if (!cupom) return;
+
+        const usadoNum = parseInt((c.usado || '0').split('/')[0]) || 0;
+        
+        // Verificar se já existe afiliado com esse cupom
+        const existing = db.prepare('SELECT id FROM afiliados WHERE cupom = ?').get(cupom);
+        if (existing) { existentes++; return; }
+
+        // Tentar encontrar candidato existente pelo cupom (nome parcial)
+        const nomeGuess = cupom.replace(/[0-9!@#$%]/g,'').toLowerCase();
+        let candidatoId = null;
+        
+        if (nomeGuess.length >= 3) {
+          const candidatoExist = db.prepare(
+            "SELECT id FROM candidatos WHERE LOWER(name) LIKE ? OR LOWER(instagram) LIKE ? OR LOWER(cupom) = ?"
+          ).get('%'+nomeGuess+'%', '%'+nomeGuess+'%', cupom.toLowerCase());
+          candidatoId = candidatoExist?.id;
+        }
+
+        // Criar candidato placeholder se não encontrou
+        if (!candidatoId) {
+          const countC = db.prepare('SELECT COUNT(*) as n FROM candidatos').get().n;
+          candidatoId = 'CP' + String(countC + 1).padStart(3,'0');
+          db.prepare(`
+            INSERT OR IGNORE INTO candidatos 
+            (id, name, whatsapp, instagram, email, cupom, status, fonte, data_inscricao)
+            VALUES (?, ?, '', '', '', ?, 'Ativo', 'CartPanda import', ?)
+          `).run(candidatoId, cupom, cupom, c.inicio || '');
+        }
+
+        // Criar afiliado
+        try {
+          db.prepare(`
+            INSERT OR IGNORE INTO afiliados 
+            (candidato_id, cupom, desconto_pct, comissao_pct, status, data_inicio)
+            VALUES (?, ?, 10, ?, 'ativo', ?)
+          `).run(candidatoId, cupom, comissao_pct_padrao, c.inicio || '');
+
+          db.prepare("UPDATE candidatos SET cupom=?, status='Ativo' WHERE id=?")
+            .run(cupom, candidatoId);
+
+          log(candidatoId, 'afiliado_importado', `Importado do CartPanda — ${usadoNum} usos`, null, 'Ativo', 'Sistema');
+          criados++;
+          resultado.push({ cupom, usado: c.usado, status: c.status });
+        } catch(e) { erros++; }
+      });
+    });
+    tx();
+
+    res.json({ ok: true, total: cupons.length, criados, existentes, erros, afiliados: resultado });
+  } catch(err) {
+    console.error('import-coupons error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── INIT & START ──────────────────────────────────────────────────────────────
 dbModule.initDB().then(database => {
   const dbHelpers = {
