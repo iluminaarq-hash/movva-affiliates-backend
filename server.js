@@ -370,10 +370,10 @@ app.post('/api/cartpanda/sync-coupons', auth, async (req, res) => {
         const candidatoExist = db.get("SELECT id FROM candidatos WHERE LOWER(name) LIKE ? OR LOWER(instagram) LIKE ?", ['%'+nomeGuess+'%','%'+nomeGuess+'%']);
         const afiliadoCandidatoId = candidatoExist?.id || candidatoId;
         if (!candidatoExist) {
-          db.prepare("INSERT OR IGNORE INTO candidatos (id, name, whatsapp, instagram, cupom, status, fonte, data_inscricao) VALUES (?,?,'','',?,'Ativo','CartPanda import',date('now'))").run(candidatoId, cupom, cupom);
+          db.run("INSERT OR IGNORE INTO candidatos (id, name, whatsapp, instagram, cupom, status, fonte, data_inscricao) VALUES (?,?,'','',?,'Ativo','CartPanda import',date('now'))", [candidatoId, cupom, cupom]);
         }
-        db.prepare("INSERT OR IGNORE INTO afiliados (candidato_id, cupom, desconto_pct, comissao_pct, cartpanda_discount_id, status, data_inicio) VALUES (?,?,?,?,?,'ativo',date('now'))").run(afiliadoCandidatoId, cupom, parseFloat(d.discount||10), comissao_pct, String(d.id||''));
-        db.prepare("UPDATE candidatos SET cupom=?,status='Ativo' WHERE id=?").run(cupom, afiliadoCandidatoId);
+        db.run("INSERT OR IGNORE INTO afiliados (candidato_id, cupom, desconto_pct, comissao_pct, cartpanda_discount_id, status, data_inicio) VALUES (?,?,?,?,?,'ativo',date('now'))", [afiliadoCandidatoId, cupom, parseFloat(d.discount||10]), comissao_pct, String(d.id||''));
+        db.run("UPDATE candidatos SET cupom=?,status='Ativo' WHERE id=?", [cupom, afiliadoCandidatoId]);
         criados++;
       } else if (existing) { existentes++; }
 
