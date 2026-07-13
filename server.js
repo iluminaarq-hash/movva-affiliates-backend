@@ -243,6 +243,90 @@ app.post('/api/candidatos/bulk/import', auth, (req, res) => {
 });
 
 
+
+// ── IMPORT COUPONS FROM CARTPANDA UI ─────────────────────────────────────────
+// Recebe lista de cupons coletada via browser e importa pedidos
+app.post('/api/cartpanda/import-coupons', auth, async (req, res) => {
+  try {
+    const { coupons = [], comissao_pct = 10 } = req.body;
+    let criados = 0, existentes = 0, pedidosTotal = 0;
+    const resultado = [];
+    const erros = [];
+
+    for (const d of coupons) {
+      const cupom = (d.code || '').toUpperCase().trim();
+      if (!cupom) continue;
+
+      // Verificar/criar afiliado
+      let afiliado = db.prepare('SELECT id, comissao_pct FROM afiliados WHERE cupom = ?').get(cupom);
+      
+      if (!afiliado) {
+        // Tentar achar candidato pelo nome similar ao cupom
+        const nomeGuess = cupom.replace(/[0-9]/g,'').toLowerCase();
+        const candidatoExist = nomeGuess.length > 3 
+          ? db.prepare("SELECT id FROM candidatos WHERE LOWER(name) LIKE ? OR LOWER(instagram) LIKE ?").get('%'+nomeGuess+'%','%'+nomeGuess+'%')
+          : null;
+        
+        const countC = db.prepare('SELECT COUNT(*) as n FROM candidatos').get().n;
+        const candidatoId = candidatoExist?.id || ('EXT' + String(countC + 1).padStart(3,'0'));
+        
+        if (!candidatoExist) {
+          db.prepare("INSERT OR IGNORE INTO candidatos (id, name, whatsapp, instagram, cupom, status, fonte, data_inscricao) VALUES (?,?,'','',?,'Ativo','CartPanda import',date('now'))").run(candidatoId, cupom, cupom);
+        }
+        
+        db.prepare("INSERT OR IGNORE INTO afiliados (candidato_id, cupom, desconto_pct, comissao_pct, cartpanda_discount_id, status, data_inicio) VALUES (?,?,?,?,?,'ativo',date('now'))").run(
+          candidatoId, cupom, 10, comissao_pct, String(d.id||'')
+        );
+        db.prepare("UPDATE candidatos SET cupom=?,status='Ativo' WHERE id=?").run(cupom, candidatoId);
+        
+        afiliado = db.prepare('SELECT id, comissao_pct FROM afiliados WHERE cupom = ?').get(cupom);
+        criados++;
+      } else {
+        existentes++;
+      }
+
+      // Buscar pedidos com esse cupom via CartPanda API
+      try {
+        const orders = await cartpanda.getOrdersByCoupon(cupom);
+        const paidOrders = orders.filter(o => !o.cancelled_at);
+        
+        if (afiliado && paidOrders.length > 0) {
+          const insertP = db.prepare("INSERT OR IGNORE INTO pedidos (cartpanda_order_id,numero_pedido,afiliado_id,cupom,cliente_nome,cliente_email,valor_produtos,valor_desconto,valor_frete,valor_total,base_comissionavel,comissao_valor,status_pagamento,status_pedido,cancelado,data_pedido,raw_data) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+          let vendasCupom = 0;
+          const tx = db.transaction(() => {
+            paidOrders.forEach(o => {
+              const d2 = cartpanda.extractOrderData(o);
+              const com = d2.base_comissionavel * afiliado.comissao_pct / 100;
+              insertP.run(d2.cartpanda_order_id,d2.numero_pedido,afiliado.id,cupom,d2.cliente_nome,d2.cliente_email,d2.valor_produtos,d2.valor_desconto,d2.valor_frete,d2.valor_total,d2.base_comissionavel,com,d2.status_pagamento,d2.status_pedido,d2.cancelado,d2.data_pedido,d2.raw_data);
+              vendasCupom += d2.base_comissionavel;
+              pedidosTotal++;
+            });
+          });
+          tx();
+          if (paidOrders.length > 0) {
+            resultado.push({ cupom, pedidos: paidOrders.length, total_vendido: vendasCupom.toFixed(2) });
+          }
+        }
+      } catch(orderErr) {
+        erros.push({ cupom, erro: orderErr.message });
+      }
+    }
+
+    res.json({ 
+      ok: true, 
+      total_cupons: coupons.length, 
+      afiliados_criados: criados, 
+      afiliados_existentes: existentes, 
+      pedidos_importados: pedidosTotal,
+      cupons_com_vendas: resultado,
+      erros: erros.slice(0,10)
+    });
+  } catch(err) {
+    console.error('import-coupons error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── CARTPANDA PROXY ────────────────────────────────────────────────────────────
 app.get('/api/cartpanda/discounts', auth, async (req, res) => {
   try {
