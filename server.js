@@ -4,6 +4,7 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const dbModule = require('./db');
 const cartpanda = require('./cartpanda');
+let _globalDb = null; // will be set on init
 const sheets = require('./sheets');
 
 const app = express();
@@ -249,7 +250,8 @@ app.post('/api/candidatos/bulk/import', auth, (req, res) => {
 app.post('/api/cartpanda/import-coupons', auth, async (req, res) => {
   try {
     const { coupons = [], comissao_pct = 10 } = req.body;
-    const db = req.db;
+    const db = req.db || _globalDb;
+    if (!db) return res.status(503).json({ error: 'DB not ready' });
     let criados = 0, existentes = 0, pedidosTotal = 0;
     const resultado = [];
     const erros = [];
@@ -409,6 +411,7 @@ dbModule.initDB().then(database => {
     save: dbModule.save
   };
 
+  _globalDb = dbHelpers; // set global
   // Inject db into every request
   app.use((req, res, next) => { req.db = dbHelpers; next(); });
 
